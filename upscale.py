@@ -27,8 +27,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--input", required=True, type=Path, help="Source image path.")
     p.add_argument("--output", required=True, type=Path, help="Destination image path.")
     p.add_argument(
-        "--lora", required=True, type=Path,
-        help="Subject LoRA .safetensors (ai-toolkit / diffusers-keyed).",
+        "--lora", type=Path, default=None,
+        help="Subject LoRA .safetensors (ai-toolkit / diffusers-keyed). "
+             "Required unless --no-refine is set.",
     )
     p.add_argument(
         "--preset", choices=sorted(PRESETS), default="balanced",
@@ -66,9 +67,13 @@ def main(argv: list[str] | None = None) -> int:
     if not args.input.exists():
         print(f"Input not found: {args.input}", file=sys.stderr)
         return 2
-    if not args.no_refine and not args.lora.exists():
-        print(f"LoRA file not found: {args.lora}", file=sys.stderr)
-        return 2
+    if not args.no_refine:
+        if args.lora is None:
+            print("--lora is required unless --no-refine is set.", file=sys.stderr)
+            return 2
+        if not args.lora.exists():
+            print(f"LoRA file not found: {args.lora}", file=sys.stderr)
+            return 2
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     # Deferred imports — these pull in numpy/torch/diffusers/spandrel/etc.
