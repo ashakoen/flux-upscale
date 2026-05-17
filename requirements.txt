@@ -1,0 +1,17 @@
+# Core diffusion stack. Torch is expected to be preinstalled by the RunPod
+# pytorch:2.x image so we don't pin it here — installing torch via pip in a
+# CUDA pod often causes wheel-version mismatches.
+diffusers>=0.30.0
+transformers>=4.43.0
+accelerate>=0.33.0
+safetensors>=0.4.3
+huggingface_hub>=0.24.0
+sentencepiece>=0.2.0
+protobuf>=3.20.0
+
+# Base upscalers (Real-ESRGAN, SwinIR, etc.) via a single clean loader.
+spandrel>=0.3.4
+
+# Image I/O.
+Pillow>=10.0.0
+numpy>=1.24.0
