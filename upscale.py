@@ -32,8 +32,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "Required unless --no-refine is set.",
     )
     p.add_argument(
-        "--preset", choices=sorted(PRESETS), default="balanced",
-        help="Named preset — sets all the knobs; individual flags override.",
+        "--preset", choices=sorted(PRESETS), default="portrait",
+        help="Content mode / preset — sets prompt + all knobs; individual flags "
+             "override. 'portrait' (tuned) and 'fullbody' are the two main modes.",
     )
     p.add_argument("--scale", type=int, choices=[2, 3], default=2,
                    help="Final upscale factor relative to the input size.")
@@ -59,10 +60,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Optional second LoRA (e.g. a skin/realism LoRA) stacked "
                         "on top of the subject LoRA to add pore/skin detail. Lets "
                         "you keep --denoise low (teeth/structure safe).")
-    p.add_argument("--realism-scale", type=float, default=0.0,
-                   help="Weight for --realism-lora. Try 0.15-0.35. 0 disables.")
-    p.add_argument("--sharpen", type=float, default=0.0,
-                   help="Optical unsharp-mask post-pass amount (0 = off). Try "
+    p.add_argument("--realism-scale", type=float, default=None,
+                   help="Override preset weight for --realism-lora. Try 0.15-0.35. "
+                        "Only active if --realism-lora is also supplied.")
+    p.add_argument("--sharpen", type=float, default=None,
+                   help="Override preset optical unsharp-mask amount (0 = off). Try "
                         "0.2-0.5. Enhances existing detail without re-inventing "
                         "structure — safe for teeth/edges, unlike raising denoise.")
     p.add_argument("--sharpen-radius", type=float, default=2.0,
@@ -75,28 +77,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Stage 2 refines in tiles of this size (px) at Flux's "
                         "native resolution, then feather-blends. 0 = legacy "
                         "single whole-image pass (blurs/drifts at high res).")
-    p.add_argument("--tile-overlap", type=int, default=128,
-                   help="Overlap (px) between refine tiles; blended to hide seams.")
+    p.add_argument("--tile-overlap", type=int, default=None,
+                   help="Override preset overlap (px) between refine tiles; "
+                        "blended to hide seams.")
     p.add_argument("--no-refine", action="store_true",
                    help="Run only Stage 1 (base upscale). Skips Flux refinement.")
     return p.parse_args(argv)
 
 
-def _maybe_sharpen(img, args):
-    """Apply an optical unsharp-mask pass if --sharpen > 0. Enhances existing
-    detail (skin pores, fabric, hair) without re-synthesising structure, so it
-    won't distort teeth/edges the way pushing denoise does."""
-    if args.sharpen and args.sharpen > 0:
+def _maybe_sharpen(img, amount, radius, threshold):
+    """Apply an optical unsharp-mask pass if amount > 0. Enhances existing detail
+    (skin pores, fabric, hair) without re-synthesising structure, so it won't
+    distort teeth/edges the way pushing denoise does."""
+    if amount and amount > 0:
         from PIL import ImageFilter
-        percent = max(1, round(args.sharpen * 100))
+        percent = max(1, round(amount * 100))
         img = img.filter(ImageFilter.UnsharpMask(
-            radius=args.sharpen_radius,
-            percent=percent,
-            threshold=args.sharpen_threshold,
+            radius=radius, percent=percent, threshold=threshold,
         ))
         print(f"[upscale] sharpen: unsharp mask "
-              f"(amount={args.sharpen}, radius={args.sharpen_radius}, "
-              f"threshold={args.sharpen_threshold})")
+              f"(amount={amount}, radius={radius}, threshold={threshold})")
     return img
 
 
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     # Deferred imports — these pull in numpy/torch/diffusers/spandrel/etc.
     from PIL import Image
     from pipeline.base_upscale import BaseUpscaler
-    from pipeline.flux_refine import DEFAULT_PROMPT, FluxRefiner
+    from pipeline.flux_refine import FluxRefiner
 
     params = apply_preset(args.preset, {
         "base_upscaler": args.base_upscaler,
@@ -126,13 +126,19 @@ def main(argv: list[str] | None = None) -> int:
         "lora_scale": args.lora_scale,
         "guidance_scale": args.guidance_scale,
         "steps": args.steps,
+        "realism_scale": args.realism_scale,
+        "sharpen": args.sharpen,
+        "tile_overlap": args.tile_overlap,
     })
-    prompt = args.prompt if args.prompt is not None else DEFAULT_PROMPT
+    prompt = args.prompt if args.prompt is not None else params["prompt"]
 
     print(f"[upscale] preset={args.preset} resolved params:")
     for k, v in params.items():
+        if k == "prompt":
+            continue
         print(f"           {k} = {v}")
-    print(f"[upscale] scale={args.scale}x  prompt={'<custom>' if args.prompt else '<default>'}")
+    print(f"[upscale] scale={args.scale}x  "
+          f"prompt={'<custom>' if args.prompt else '<' + args.preset + '>'}")
 
     src = Image.open(args.input)
     print(f"[upscale] input: {args.input} ({src.width}x{src.height})")
@@ -153,7 +159,8 @@ def main(argv: list[str] | None = None) -> int:
         torch.cuda.empty_cache()
 
     if args.no_refine:
-        _maybe_sharpen(upscaled, args).save(args.output)
+        _maybe_sharpen(upscaled, params["sharpen"],
+                       args.sharpen_radius, args.sharpen_threshold).save(args.output)
         print(f"[upscale] saved (Stage 1 only): {args.output}")
         return 0
 
@@ -162,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         lora_path=args.lora,
         lora_scale=params["lora_scale"],
         realism_lora_path=args.realism_lora,
-        realism_scale=args.realism_scale,
+        realism_scale=params["realism_scale"],
     )
     if refiner.realism_scale > 0:
         print(f"[upscale] realism LoRA stacked @ {refiner.realism_scale} "
@@ -176,13 +183,14 @@ def main(argv: list[str] | None = None) -> int:
         guidance_scale=params["guidance_scale"],
         seed=args.seed,
         tile=args.tile,
-        tile_overlap=args.tile_overlap,
+        tile_overlap=params["tile_overlap"],
     )
     t3 = time.time()
     print(f"[upscale] stage 2 (Flux refine) done in {t3 - t2:.1f}s → "
           f"{final.width}x{final.height}")
 
-    final = _maybe_sharpen(final, args)
+    final = _maybe_sharpen(final, params["sharpen"],
+                           args.sharpen_radius, args.sharpen_threshold)
     final.save(args.output)
     print(f"[upscale] saved: {args.output}  (total {t3 - t0:.1f}s)")
     return 0
