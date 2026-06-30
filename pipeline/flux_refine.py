@@ -86,6 +86,8 @@ class FluxRefiner:
         self,
         lora_path: str | Path,
         lora_scale: float,
+        realism_lora_path: str | Path | None = None,
+        realism_scale: float = 0.0,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         model_id: str = "black-forest-labs/FLUX.1-dev",
@@ -110,12 +112,21 @@ class FluxRefiner:
             # Cheap insurance for very large output sizes — no quality cost.
             self.pipe.vae.enable_tiling()
 
-        self.adapter_name = "subject"
-        self.pipe.load_lora_weights(
-            str(lora_path), adapter_name=self.adapter_name
-        )
-        self.pipe.set_adapters([self.adapter_name], adapter_weights=[lora_scale])
+        # Subject LoRA holds identity; optional realism LoRA stacks on top to add
+        # skin/pore texture at the model level — lets you keep denoise low (and
+        # teeth/fine structure intact) while still getting a detailed skin look.
+        adapters = ["subject"]
+        weights = [lora_scale]
+        self.pipe.load_lora_weights(str(lora_path), adapter_name="subject")
+        if realism_lora_path is not None and realism_scale > 0:
+            self.pipe.load_lora_weights(
+                str(realism_lora_path), adapter_name="realism"
+            )
+            adapters.append("realism")
+            weights.append(realism_scale)
+        self.pipe.set_adapters(adapters, adapter_weights=weights)
         self.lora_scale = lora_scale
+        self.realism_scale = realism_scale if "realism" in adapters else 0.0
 
     def _refine_one(self, img, prompt, denoise, steps, guidance_scale, generator):
         """Run a single Flux img2img pass over a grid-aligned image."""

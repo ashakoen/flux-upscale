@@ -55,6 +55,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Pass your LoRA trigger token here if your LoRA requires one."
         ),
     )
+    p.add_argument("--realism-lora", type=Path, default=None,
+                   help="Optional second LoRA (e.g. a skin/realism LoRA) stacked "
+                        "on top of the subject LoRA to add pore/skin detail. Lets "
+                        "you keep --denoise low (teeth/structure safe).")
+    p.add_argument("--realism-scale", type=float, default=0.0,
+                   help="Weight for --realism-lora. Try 0.15-0.35. 0 disables.")
+    p.add_argument("--sharpen", type=float, default=0.0,
+                   help="Optical unsharp-mask post-pass amount (0 = off). Try "
+                        "0.2-0.5. Enhances existing detail without re-inventing "
+                        "structure — safe for teeth/edges, unlike raising denoise.")
+    p.add_argument("--sharpen-radius", type=float, default=2.0,
+                   help="Unsharp-mask radius in px (default 2.0).")
+    p.add_argument("--sharpen-threshold", type=int, default=3,
+                   help="Unsharp-mask threshold; higher = sharpen edges only, "
+                        "leave flat skin/sky alone (default 3).")
     p.add_argument("--seed", type=int, default=None, help="Random seed (optional).")
     p.add_argument("--tile", type=int, default=1024,
                    help="Stage 2 refines in tiles of this size (px) at Flux's "
@@ -65,6 +80,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-refine", action="store_true",
                    help="Run only Stage 1 (base upscale). Skips Flux refinement.")
     return p.parse_args(argv)
+
+
+def _maybe_sharpen(img, args):
+    """Apply an optical unsharp-mask pass if --sharpen > 0. Enhances existing
+    detail (skin pores, fabric, hair) without re-synthesising structure, so it
+    won't distort teeth/edges the way pushing denoise does."""
+    if args.sharpen and args.sharpen > 0:
+        from PIL import ImageFilter
+        percent = max(1, round(args.sharpen * 100))
+        img = img.filter(ImageFilter.UnsharpMask(
+            radius=args.sharpen_radius,
+            percent=percent,
+            threshold=args.sharpen_threshold,
+        ))
+        print(f"[upscale] sharpen: unsharp mask "
+              f"(amount={args.sharpen}, radius={args.sharpen_radius}, "
+              f"threshold={args.sharpen_threshold})")
+    return img
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -120,12 +153,20 @@ def main(argv: list[str] | None = None) -> int:
         torch.cuda.empty_cache()
 
     if args.no_refine:
-        upscaled.save(args.output)
+        _maybe_sharpen(upscaled, args).save(args.output)
         print(f"[upscale] saved (Stage 1 only): {args.output}")
         return 0
 
     # --- Stage 2: Flux refinement ---------------------------------------------
-    refiner = FluxRefiner(lora_path=args.lora, lora_scale=params["lora_scale"])
+    refiner = FluxRefiner(
+        lora_path=args.lora,
+        lora_scale=params["lora_scale"],
+        realism_lora_path=args.realism_lora,
+        realism_scale=args.realism_scale,
+    )
+    if refiner.realism_scale > 0:
+        print(f"[upscale] realism LoRA stacked @ {refiner.realism_scale} "
+              f"(subject @ {refiner.lora_scale})")
     t2 = time.time()
     final = refiner(
         image=upscaled,
@@ -141,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[upscale] stage 2 (Flux refine) done in {t3 - t2:.1f}s → "
           f"{final.width}x{final.height}")
 
+    final = _maybe_sharpen(final, args)
     final.save(args.output)
     print(f"[upscale] saved: {args.output}  (total {t3 - t0:.1f}s)")
     return 0
