@@ -56,6 +56,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     p.add_argument("--seed", type=int, default=None, help="Random seed (optional).")
+    p.add_argument("--tile", type=int, default=1024,
+                   help="Stage 2 refines in tiles of this size (px) at Flux's "
+                        "native resolution, then feather-blends. 0 = legacy "
+                        "single whole-image pass (blurs/drifts at high res).")
+    p.add_argument("--tile-overlap", type=int, default=128,
+                   help="Overlap (px) between refine tiles; blended to hide seams.")
     p.add_argument("--no-refine", action="store_true",
                    help="Run only Stage 1 (base upscale). Skips Flux refinement.")
     return p.parse_args(argv)
@@ -128,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
         steps=params["steps"],
         guidance_scale=params["guidance_scale"],
         seed=args.seed,
+        tile=args.tile,
+        tile_overlap=args.tile_overlap,
     )
     t3 = time.time()
     print(f"[upscale] stage 2 (Flux refine) done in {t3 - t2:.1f}s → "

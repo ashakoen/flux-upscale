@@ -4,6 +4,9 @@
 diffusers>=0.30.0
 transformers>=4.43.0
 accelerate>=0.33.0
+# Required by diffusers' load_lora_weights — Flux LoRA application routes
+# through the PEFT backend ("PEFT backend is required for this method").
+peft>=0.12.0
 safetensors>=0.4.3
 huggingface_hub>=0.24.0
 sentencepiece>=0.2.0
